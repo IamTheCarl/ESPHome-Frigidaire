@@ -10,17 +10,18 @@ namespace esphome {
     namespace frigidaire {
         static const char* const TAG = "frigidaire.climate";
 
-        const uint16_t HEADER_MARK = 9166;
-        const uint16_t HEADER_SPACE = 4470;
+        const uint16_t HEADER_MARK = 9000;
+        const uint16_t HEADER_SPACE = 4500;
 
-        const uint16_t BIT_MARK = 646;
-        const uint16_t ONE_SPACE = 1647;
-        const uint16_t ZERO_SPACE = 547;
+        const uint16_t BIT_MARK = 600;
+        const uint16_t ONE_SPACE = 500;
+        const uint16_t ZERO_SPACE = 1500;
+        const uint16_t GAP_SPACE = ~0;
 
         const size_t messageLength = sizeof(Payload);
 
         uint8_t calculateChecksum(const std::array<uint8_t, messageLength> & raw) {
-            uint8_t calculatedChecksum = 0x0b;
+            uint8_t calculatedChecksum = 0x0;
             for (std::array<uint8_t, messageLength>::const_iterator byte_iterator = raw.cbegin(), end = raw.cend() - 1; byte_iterator != end; byte_iterator += 1) {
                 calculatedChecksum += *byte_iterator;
             }
@@ -123,16 +124,17 @@ namespace esphome {
             auto transmit = this->transmitter_->transmit();
             remote_base::RemoteTransmitData *data = transmit.get_data();
 
-            // Grab their attention with a precicely timed flash then pause.
-            data->item(HEADER_MARK, HEADER_SPACE);
 
             // Convert the payload to a buffer.
             std::array<uint8_t, messageLength> raw;
-            std::memcpy(&raw.front(), &payload, raw.size());
+            std::memcpy(&raw.front(), &this->payload, raw.size());
 
             // Calculate the checksum.
             uint8_t calculatedChecksum = calculateChecksum(raw);
             raw.back() = calculatedChecksum;
+
+            // TODO this is hard coded for testing.
+            raw = {0xc3, 0x4f, 0xe0, 0x00, 0xa0, 0x00, 0x00, 0x00, 0x00, 0x20, 0x00, 0x05, 0xb7};
 
             // Potentally useful for debug and troubleshooting.
             std::string stringified;
@@ -142,21 +144,29 @@ namespace esphome {
             }
             ESP_LOGD(TAG, "RAW: %s", stringified.c_str());
 
+            data->set_carrier_frequency(38000);
+            data->reserve(8 * messageLength);
+
+            // Grab their attention with a precicely timed flash then pause.
+            data->item(HEADER_MARK, HEADER_SPACE);
+
             // Encode the bits.
             for (uint8_t & byte : raw) {
                 for (uint8_t bit = 0; bit < 8; bit += 1) {
-                    data->mark(BIT_MARK);
-
-                    if ((byte & (1 << bit)) != 0x00) {
-                        data->space(ONE_SPACE);
+                    if (((byte >> bit) & 0x01) != 0x00) {
+                        data->item(BIT_MARK, ONE_SPACE);
                     } else {
-                        data->space(ZERO_SPACE);
+                        data->item(BIT_MARK, ZERO_SPACE);
                     }
                 }
             }
 
+            // data->space(GAP_SPACE);
+
             // And transmit!
-            transmit.perform();
+            // for (int i = 0; i < 5; i += 1) {
+                transmit.perform();
+            // }
         }
 
         bool FrigidareClimate::on_receive(remote_base::RemoteReceiveData data) {
@@ -180,6 +190,7 @@ namespace esphome {
                         } else {
                             // It's... not meant for us I guess?
                             // Give up on this one.
+                            ESP_LOGW(TAG, "MESSAGE TOO SHORT.");
                             return false;
                         }
                     }
@@ -293,18 +304,18 @@ namespace esphome {
                                 // Bad checksum.
                                 // Either corrupted or wasn't actually a message for us.
                                 ESP_LOGD(TAG, "Checksum failed. Expected: %02x Got: %02x", calculatedChecksum, payload.getChecksum());
-                                return false;
                             }
                         } else {
-                            ESP_LOGD(TAG, "Fan speed is invalid.");
+                            ESP_LOGW(TAG, "Fan speed is invalid.");
                         }
                     } else {
-                        ESP_LOGD(TAG, "Swing Mode is invalid.");
+                        ESP_LOGW(TAG, "Swing Mode is invalid.");
                     }
                 } else {
-                    ESP_LOGD(TAG, "Mode is invalid.");
-                    return false;
+                    ESP_LOGW(TAG, "Mode is invalid.");
                 }
+            } else {
+                ESP_LOGW(TAG, "HEADER INVALID.");
             }
 
             return false;
@@ -312,7 +323,7 @@ namespace esphome {
 
         Payload::Payload() {
             // It seems the controller defaults to 0xFF for a lot of defaults, so that's what we'll do to.
-            std::memset(this, 0xFF, sizeof(*this));
+            std::memset(this, 0x00, sizeof(*this));
 
             // Set some sane defaults, just in case something doesn't get set.
             this->setSwingMode(SwingMode::SWING_OFF);
@@ -328,11 +339,11 @@ namespace esphome {
         }
 
         bool Payload::isPowered() {
-            return this->power == 0;
+            return this->power == 1;
         }
 
         void Payload::setPowered(bool powered) {
-            this->power = powered ? 0:1;
+            this->power = powered ? 1:0;
         }
 
         uint8_t Payload::getChecksum() {
@@ -340,12 +351,11 @@ namespace esphome {
         }
 
         uint8_t Payload::getTempratureC() {
-            return 39 - this->temprature;
+            return 8 + this->temprature;
         }
 
         void Payload::setTempratureC(uint8_t temprature) {
-            this->temprature = 39 - std::min(std::max(temprature, FRIGIDAIRE_TEMP_C_MIN), FRIGIDAIRE_TEMP_C_MAX);
-            ESP_LOGD(TAG, "TEMP: %i - %i", temprature, this->getTempratureC());
+            this->temprature = std::min(std::max(temprature, FRIGIDAIRE_TEMP_C_MIN), FRIGIDAIRE_TEMP_C_MAX) - 8;
         }
 
         Mode Payload::getMode() {

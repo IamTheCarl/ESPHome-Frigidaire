@@ -13,24 +13,24 @@ namespace esphome {
         const float FRIGIDAIR_TEMP_C_STEP = 1.0f;
 
         enum Mode {
-            MODE_AUTO = 0x7,
-            COOL = 0x6,
-            DRY  = 0x5,
-            FAN  = 0x1,
+            MODE_AUTO = 0x0,
+            COOL = 0x1,
+            DRY  = 0x2,
+            FAN  = 0x6,
             MODE_INVALID = 0xFF
         };
 
         enum SwingMode {
-            SWING_ON = 0x7,
-            SWING_OFF = 0x0,
+            SWING_ON = 0x0,
+            SWING_OFF = 0x7,
             SWING_INVALID = 0xFF
         };
 
         enum FanSpeed {
-            FAN_AUTO = 0x5,
-            FAN_HIGH = 0xD,
-            FAN_MID  = 0xB,
-            FAN_LOW  = 0x9,
+            FAN_AUTO = 0xA,
+            FAN_HIGH = 0x2,
+            FAN_MID  = 0x4,
+            FAN_LOW  = 0x6,
             FAN_INVALID = 0xFF,
         };
 
