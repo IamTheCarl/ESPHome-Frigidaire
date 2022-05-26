@@ -10,13 +10,13 @@ namespace esphome {
     namespace frigidaire {
         static const char* const TAG = "frigidaire.climate";
 
-        const uint16_t HEADER_MARK = 9000;
-        const uint16_t HEADER_SPACE = 4500;
+        const uint16_t HEADER_MARK = 8968;
+        const uint16_t HEADER_SPACE = 4425;
 
         const uint16_t BIT_MARK = 600;
-        const uint16_t ONE_SPACE = 500;
-        const uint16_t ZERO_SPACE = 1500;
-        const uint16_t GAP_SPACE = ~0;
+        const uint16_t ONE_SPACE = 1650;
+        const uint16_t ZERO_SPACE = 500;
+        const uint16_t GAP_SPACE = HEADER_MARK;
 
         const size_t messageLength = sizeof(Payload);
 
@@ -121,10 +121,6 @@ namespace esphome {
 
             payload.setTempratureC(this->target_temperature);
 
-            auto transmit = this->transmitter_->transmit();
-            remote_base::RemoteTransmitData *data = transmit.get_data();
-
-
             // Convert the payload to a buffer.
             std::array<uint8_t, messageLength> raw;
             std::memcpy(&raw.front(), &this->payload, raw.size());
@@ -134,7 +130,8 @@ namespace esphome {
             raw.back() = calculatedChecksum;
 
             // TODO this is hard coded for testing.
-            raw = {0xc3, 0x4f, 0xe0, 0x00, 0xa0, 0x00, 0x00, 0x00, 0x00, 0x20, 0x00, 0x05, 0xb7};
+            // raw = {0xc3, 0x4f, 0xe0, 0x00, 0xa0, 0x00, 0x00, 0x00, 0x00, 0x20, 0x00, 0x05, 0xb7}; // Auto mode.
+            // raw = { 0xc3, 0x67, 0xe0, 0x00, 0xa0, 0x00, 0x20, 0x00, 0x00, 0x20, 0x00, 0x05, 0xef }; // Cool mode.
 
             // Potentally useful for debug and troubleshooting.
             std::string stringified;
@@ -144,14 +141,19 @@ namespace esphome {
             }
             ESP_LOGD(TAG, "RAW: %s", stringified.c_str());
 
-            data->set_carrier_frequency(38000);
-            data->reserve(8 * messageLength);
+            auto transmit = this->transmitter_->transmit();
+            remote_base::RemoteTransmitData *data = transmit.get_data();
 
-            // Grab their attention with a precicely timed flash then pause.
+            data->reset();
+            data->set_carrier_frequency(38000);
+            data->reserve(8 * messageLength + 3);
+
+            // Grab their attention with a precicely timed flash, then pause.
             data->item(HEADER_MARK, HEADER_SPACE);
 
             // Encode the bits.
-            for (uint8_t & byte : raw) {
+            for (const uint8_t & byte : raw) {
+                ESP_LOGD(TAG, "BYTE: %02x", byte);
                 for (uint8_t bit = 0; bit < 8; bit += 1) {
                     if (((byte >> bit) & 0x01) != 0x00) {
                         data->item(BIT_MARK, ONE_SPACE);
@@ -161,7 +163,8 @@ namespace esphome {
                 }
             }
 
-            // data->space(GAP_SPACE);
+            // We need that extra bit mark so the receiver recognizes the end of a transmission.
+            data->item(BIT_MARK, GAP_SPACE);
 
             // And transmit!
             // for (int i = 0; i < 5; i += 1) {
@@ -181,12 +184,12 @@ namespace esphome {
                 for (uint8_t & byte : raw) {
                     for (uint8_t bit = 0; bit < 8; bit += 1) {
                         if (data.expect_item(BIT_MARK, ZERO_SPACE)) {
-                            // It's a one.
-                            byte |= 1 << bit;
-                        } else if (data.expect_item(BIT_MARK, ONE_SPACE)) {
                             // It's a zero.
                             // We don't actually need to clear the bit since I cleared all of them earlier.
                             // byte &= ~(1 << bit);
+                        } else if (data.expect_item(BIT_MARK, ONE_SPACE)) {
+                            // It's a one.
+                            byte |= 1 << bit;
                         } else {
                             // It's... not meant for us I guess?
                             // Give up on this one.
@@ -194,6 +197,7 @@ namespace esphome {
                             return false;
                         }
                     }
+                    ESP_LOGD(TAG, "BYTE: %02x", byte);
                 }
 
                 // Potentally useful for debug and troubleshooting.
@@ -208,111 +212,115 @@ namespace esphome {
                 Payload payload;
                 std::memcpy(&payload, &raw.front(), raw.size());
 
-                // Okay, so we had enough bits worth of data.
-                // Now we have to validate that data.
+                if (payload.getIdentity() == 0xc3) {
+                    // Okay, so we had enough bits worth of data.
+                    // Now we have to validate that data.
 
-                // Validate the mode.
-                if (payload.getMode() != Mode::MODE_INVALID) {
-                    // Validate the swing.
-                    if (payload.getSwingMode() != SwingMode::SWING_INVALID) {
-                        // Validate the fan speed.
-                        if (payload.getFanSpeed() != FanSpeed::FAN_INVALID) {
-                            // Validate the checksum.
-                            uint8_t calculatedChecksum = calculateChecksum(raw);
+                    // Validate the mode.
+                    if (payload.getMode() != Mode::MODE_INVALID) {
+                        // Validate the swing.
+                        if (payload.getSwingMode() != SwingMode::SWING_INVALID) {
+                            // Validate the fan speed.
+                            if (payload.getFanSpeed() != FanSpeed::FAN_INVALID) {
+                                // Validate the checksum.
+                                uint8_t calculatedChecksum = calculateChecksum(raw);
 
-                            if (calculatedChecksum == payload.getChecksum()) {
-                                ESP_LOGD(TAG, "Checksum passed.");
+                                if (calculatedChecksum == payload.getChecksum()) {
+                                    ESP_LOGD(TAG, "Checksum passed.");
 
-                                // Everything is valid!
-                                // Apply the state!
+                                    // Everything is valid!
+                                    // Apply the state!
 
-                                // Powered is special since the controller doesn't consider it a mode.
-                                if (payload.isPowered()) {
-                                    // It's on, so we need to get the mode.
-                                    switch (payload.getMode()) {
-                                        case Mode::MODE_AUTO:
-                                            this->mode = climate::CLIMATE_MODE_AUTO;
+                                    // Powered is special since the controller doesn't consider it a mode.
+                                    if (payload.isPowered()) {
+                                        // It's on, so we need to get the mode.
+                                        switch (payload.getMode()) {
+                                            case Mode::MODE_AUTO:
+                                                this->mode = climate::CLIMATE_MODE_AUTO;
+                                                break;
+                                            case Mode::COOL:
+                                                this->mode = climate::CLIMATE_MODE_COOL;
+                                                break;
+                                            case Mode::DRY:
+                                                this->mode = climate::CLIMATE_MODE_DRY;
+                                                break;
+                                            case Mode::FAN:
+                                                this->mode = climate::CLIMATE_MODE_FAN_ONLY;
+                                                break;
+                                            default:
+                                                // Should be impossible at this point.
+                                                ESP_LOGW(TAG, "Impossible mode: %02x", payload.getMode());
+                                                break;
+                                        }
+                                    } else {
+                                        // It's off.
+                                        this->mode = climate::CLIMATE_MODE_OFF;
+                                    }
+
+                                    switch (payload.getFanSpeed()) {
+                                        case FanSpeed::FAN_AUTO:
+                                            this->fan_mode = climate::CLIMATE_FAN_AUTO;
                                             break;
-                                        case Mode::COOL:
-                                            this->mode = climate::CLIMATE_MODE_COOL;
+                                        case FanSpeed::FAN_HIGH:
+                                            this->fan_mode = climate::CLIMATE_FAN_HIGH;
                                             break;
-                                        case Mode::DRY:
-                                            this->mode = climate::CLIMATE_MODE_DRY;
+                                        case FanSpeed::FAN_MID:
+                                            this->fan_mode = climate::CLIMATE_FAN_MEDIUM;
                                             break;
-                                        case Mode::FAN:
-                                            this->mode = climate::CLIMATE_MODE_FAN_ONLY;
+                                        case FanSpeed::FAN_LOW:
+                                            this->fan_mode = climate::CLIMATE_FAN_LOW;
                                             break;
                                         default:
                                             // Should be impossible at this point.
-                                            ESP_LOGW(TAG, "Impossible mode: %02x", payload.getMode());
+                                            ESP_LOGW(TAG, "Impossible fan speed: %02x", payload.getFanSpeed());
                                             break;
                                     }
+
+                                    switch (payload.getSwingMode()) {
+                                        case SwingMode::SWING_ON:
+                                            this->swing_mode = climate::CLIMATE_SWING_VERTICAL;
+                                            break;
+                                        case SwingMode::SWING_OFF:
+                                            this->swing_mode = climate::CLIMATE_SWING_OFF;
+                                            break;
+                                        default:
+                                            // SHould be impossible at this point.
+                                            ESP_LOGW(TAG, "Impossible swing mode: %02x", payload.getSwingMode());
+                                            break;
+                                    }
+
+                                    // Only change the temprature if we're in auto or cooling mode.
+                                    switch (payload.getMode()) {
+                                        case Mode::MODE_AUTO:
+                                        case Mode::COOL:
+                                            this->target_temperature = payload.getTempratureC();
+                                            break;
+                                        default:
+                                            break;
+                                    }
+
+                                    this->payload = payload;
+
+                                    // And make that state known to the world (probably home assistant).
+                                    this->publish_state();
+
+                                    return true;
                                 } else {
-                                    // It's off.
-                                    this->mode = climate::CLIMATE_MODE_OFF;
+                                    // Bad checksum.
+                                    // Either corrupted or wasn't actually a message for us.
+                                    ESP_LOGD(TAG, "Checksum failed. Expected: %02x Got: %02x", calculatedChecksum, payload.getChecksum());
                                 }
-
-                                switch (payload.getFanSpeed()) {
-                                    case FanSpeed::FAN_AUTO:
-                                        this->fan_mode = climate::CLIMATE_FAN_AUTO;
-                                        break;
-                                    case FanSpeed::FAN_HIGH:
-                                        this->fan_mode = climate::CLIMATE_FAN_HIGH;
-                                        break;
-                                    case FanSpeed::FAN_MID:
-                                        this->fan_mode = climate::CLIMATE_FAN_MEDIUM;
-                                        break;
-                                    case FanSpeed::FAN_LOW:
-                                        this->fan_mode = climate::CLIMATE_FAN_LOW;
-                                        break;
-                                    default:
-                                        // Should be impossible at this point.
-                                        ESP_LOGW(TAG, "Impossible fan speed: %02x", payload.getFanSpeed());
-                                        break;
-                                }
-
-                                switch (payload.getSwingMode()) {
-                                    case SwingMode::SWING_ON:
-                                        this->swing_mode = climate::CLIMATE_SWING_VERTICAL;
-                                        break;
-                                    case SwingMode::SWING_OFF:
-                                        this->swing_mode = climate::CLIMATE_SWING_OFF;
-                                        break;
-                                    default:
-                                        // SHould be impossible at this point.
-                                        ESP_LOGW(TAG, "Impossible swing mode: %02x", payload.getSwingMode());
-                                        break;
-                                }
-
-                                // Only change the temprature if we're in auto or cooling mode.
-                                switch (payload.getMode()) {
-                                    case Mode::MODE_AUTO:
-                                    case Mode::COOL:
-                                        this->target_temperature = payload.getTempratureC();
-                                        break;
-                                    default:
-                                        break;
-                                }
-
-                                this->payload = payload;
-
-                                // And make that state known to the world (probably home assistant).
-                                this->publish_state();
-
-                                return true;
                             } else {
-                                // Bad checksum.
-                                // Either corrupted or wasn't actually a message for us.
-                                ESP_LOGD(TAG, "Checksum failed. Expected: %02x Got: %02x", calculatedChecksum, payload.getChecksum());
+                                ESP_LOGW(TAG, "Fan speed is invalid.");
                             }
                         } else {
-                            ESP_LOGW(TAG, "Fan speed is invalid.");
+                            ESP_LOGW(TAG, "Swing Mode is invalid.");
                         }
                     } else {
-                        ESP_LOGW(TAG, "Swing Mode is invalid.");
+                        ESP_LOGW(TAG, "Mode is invalid.");
                     }
                 } else {
-                    ESP_LOGW(TAG, "Mode is invalid.");
+                    ESP_LOGW(TAG, "Magic number did not match.");
                 }
             } else {
                 ESP_LOGW(TAG, "HEADER INVALID.");
@@ -333,9 +341,13 @@ namespace esphome {
             this->setPowered(false);
 
             // Some kind of magic identification number the AC unit expects to see.
-            this->identity = 0x3C;
+            this->identity = 0xc3;
             
             this->sum = 0;
+        }
+
+        uint8_t Payload::getIdentity() {
+            return this->identity;
         }
 
         bool Payload::isPowered() {
