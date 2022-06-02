@@ -255,6 +255,9 @@ namespace esphome {
                                     } else {
                                         // It's off.
                                         this->mode = climate::CLIMATE_MODE_OFF;
+
+                                        // When the controller turns us off, it sends an invalid temprature, so just reset to the previous temprature setting.
+                                        payload.setTempratureC(this->target_temperature);
                                     }
 
                                     switch (payload.getFanSpeed()) {
